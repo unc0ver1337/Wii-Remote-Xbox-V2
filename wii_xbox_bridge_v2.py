@@ -43,6 +43,49 @@ def decode_nunchuk(data):
     return data[0], data[1], not bool(data[5] & 8), not bool(data[5] & 4)
 
 
+class GyroSignal:
+    """Robust per-axis baseline and median filtering before angle integration."""
+    def __init__(self):
+        self.bias = None
+        self.samples = []
+        self.filtered = (0.0, 0.0, 0.0)
+        self.slow = None
+
+    def update(self, raw, slow, dt, recenter=False):
+        if any(v < 1000 or v > 15000 for v in raw):
+            return None
+        if self.slow != slow:
+            self.samples.clear()
+            self.filtered = (0.0, 0.0, 0.0)
+            self.slow = slow
+        self.samples.append(tuple(raw))
+        self.samples = self.samples[-5:]
+        if len(self.samples) < 5:
+            return (0.0, 0.0, 0.0)
+        med = tuple(statistics.median(c) for c in zip(*self.samples))
+        stable = all(max(c)-min(c) <= 30 for c in zip(*self.samples))
+        if self.bias is None:
+            if all(slow) and stable:
+                self.bias = med
+            return (0.0, 0.0, 0.0)
+        if recenter:
+            if all(slow) and stable:
+                self.bias = med
+            self.filtered = (0.0, 0.0, 0.0)
+            return self.filtered
+        rates = tuple((v-b)/13.768 * (1 if flag else 2000/440)
+                      for v, b, flag in zip(med, self.bias, slow))
+        # No single malformed sample or mode transition may produce a large jump.
+        if any(abs(v) > 720 for v in rates):
+            return None
+        if all(slow) and stable and all(abs(v) < 1.5 for v in rates):
+            self.bias = tuple(b + .02*(v-b) for b, v in zip(self.bias, med))
+        rates = tuple(0.0 if abs(v) < 1.0 else v for v in rates)
+        alpha = 1-math.exp(-max(0, min(dt, .02))/.025)
+        self.filtered = tuple(old+alpha*(new-old) for old, new in zip(self.filtered, rates))
+        return self.filtered
+
+
 def multiply(a, b):
     w, x, y, z = a
     v, i, j, k = b
@@ -114,39 +157,6 @@ def initialize(remote):
     send(remote, [0x12, 0x04, REPORT_MODE])
 
 
-def read_factory_bias(remote):
-    """Read the factory slow-mode zero values; never ask the user to hold still."""
-    address, size = 0x04A40030, 6
-    send(remote, [0x17, *address.to_bytes(4, 'big'), 0, size])
-    deadline = time.monotonic() + 1
-    result = {}
-    while time.monotonic() < deadline:
-        report = remote.read(64, 100)
-        if not report:
-            continue
-        if report[0] == 0x20:
-            send(remote, [0x12, 0x04, REPORT_MODE])
-        if report[0] != 0x21 or len(report) < 6:
-            continue
-        if report[3] & 15:
-            break
-        count = (report[3] >> 4) + 1
-        offset = (report[4] << 8) | report[5]
-        for i, value in enumerate(report[6:6+count]):
-            if 0x30 <= offset+i < 0x36:
-                result[offset+i-0x30] = value
-        if len(result) == size:
-            raw = bytes(result[i] for i in range(size))
-            # Factory zero readings use 16-bit precision; stream uses 14-bit.
-            yaw, roll, pitch = [int.from_bytes(raw[i:i+2], 'big') / 4
-                                for i in (0, 2, 4)]
-            if all(4000 < v < 12000 for v in (yaw, pitch, roll)):
-                return yaw, pitch, roll
-            break
-    print('Factory offsets unavailable; first valid gyro packet sets the baseline.', flush=True)
-    return None
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--full-angle', type=float, default=30, help='Degrees for full stick deflection')
@@ -171,11 +181,11 @@ def main():
         opened = True
         remote.set_nonblocking(False)
         initialize(remote)
-        bias = read_factory_bias(remote)
+        signal = GyroSignal()
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready. Nunchuk -> left stick; MotionPlus -> right stick.')
+        print('Ready (filtered gyro v2.1). Nunchuk -> left stick; MotionPlus -> right stick.')
         print('Hold 1+2 to recenter. Ctrl+C to stop.', flush=True)
         mapping = {0x0008: XB.XUSB_GAMEPAD_RIGHT_SHOULDER,
                    0x0010: XB.XUSB_GAMEPAD_X, 0x1000: XB.XUSB_GAMEPAD_Y}
@@ -187,7 +197,6 @@ def main():
         combo_used = False
         seen_gyro = False
         report_counts = {}
-        center_samples = []
         last_recovery = last_packet
         while True:
             report = remote.read(64, 100)
@@ -209,6 +218,7 @@ def main():
                     print(f'Stream recovery: {exc}', flush=True)
                 last_gyro = time.monotonic()
                 seen_gyro = False
+                signal = GyroSignal()
             if report:
                 report_counts[hex(report[0])] = report_counts.get(hex(report[0]), 0) + 1
                 # Extension changes can reset the reporting mode after activation.
@@ -225,33 +235,18 @@ def main():
                     nunchuk = (128, 128, False, False)
                     nunchuk_time = 0
                 raw, slow = decode_gyro(data)
-                # Corrupt/transitional ADC extremes must never move the stick.
-                if any(v < 1000 or v > 15000 for v in raw):
-                    continue
-                if bias is None:
-                    if not all(slow):
-                        continue
-                    bias = tuple(raw)
-                if center and all(slow):
-                    center_samples.append(raw)
-                    center_samples = center_samples[-40:]
-                    if len(center_samples) >= 15:
-                        columns = list(zip(*center_samples))
-                        if all(max(c)-min(c) < 40 for c in columns):
-                            bias = tuple(statistics.median(c) for c in columns)
-                elif not center:
-                    center_samples.clear()
                 dt = now - last_gyro
+                rates = signal.update(raw, slow, dt, center)
+                if rates is None:
+                    continue
                 last_gyro = now
                 first_gyro = not seen_gyro
                 seen_gyro = True
-                if first_gyro or dt > 0.25:
+                if first_gyro or dt > 0.1:
                     aim.center()
                 elif not center:
-                    rates = [(v-b)/13.768 * (1 if s else 2000/440)
-                             for v, b, s in zip(raw, bias, slow)]
-                    rates = [0 if abs(v) < 0.5 else v for v in rates]
-                    aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign, rates[2], dt)
+                    aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
+                               rates[2], min(dt, .02))
             else:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now

@@ -28,6 +28,21 @@ class Tests(unittest.TestCase):
             data = [128, 128, 80, 90, 101, last]
             self.assertEqual(b.extension_payload([0x37, 0, 0, *([0]*13), *data]), data)
 
+    def test_signal_rejects_spikes_and_centers(self):
+        signal = b.GyroSignal()
+        for _ in range(10):
+            self.assertEqual(signal.update((8057,8227,8124), (True,)*3, .008), (0,0,0))
+        self.assertIsNone(signal.update((0,16383,0), (False,)*3, .008))
+        signal.update((10000,8227,8124), (True,)*3, .008)
+        self.assertEqual(signal.filtered, (0,0,0))
+        for _ in range(12):
+            rates = signal.update((8500,8227,8124), (True,)*3, .008)
+        self.assertGreater(rates[0], 0)
+        for _ in range(6):
+            self.assertEqual(signal.update((8100,8250,8150), (True,)*3, .008, True), (0,0,0))
+        for _ in range(10):
+            self.assertEqual(signal.update((8100,8250,8150), (True,)*3, .008), (0,0,0))
+
     def test_decode(self):
         self.assertEqual(b.decode_gyro(gyro(9000, 7500, 8200)),
                          ((9000, 7500, 8200), (True, True, True)))
@@ -64,17 +79,6 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             b.write_register(remote, 0x04A600FE, 5)
 
-    def test_factory_offsets_without_stationary_sampling(self):
-        raw = b''.join(int(v*4).to_bytes(2, 'big') for v in (8000, 8100, 8200))
-        reports = [[0x20, 0, 0], [0x21, 0, 0, 0x50, 0, 0x30, *raw]]
-        sent = []
-        remote = types.SimpleNamespace(write=lambda p: sent.append(p) or len(p),
-                                       read=lambda *a: reports.pop(0))
-        self.assertEqual(b.read_factory_bias(remote), (8000, 8200, 8100))
-        self.assertIn([0x12, 0x04, b.REPORT_MODE], sent)
-        remote.read = lambda *a: [0x21, 0, 0, 7, 0, 0x30]
-        self.assertIsNone(b.read_factory_bias(remote))
-
     def test_stream_and_center_chord(self):
         frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
                   (3, gyro(12000)), (2, gyro()), (0, gyro()),
@@ -108,7 +112,8 @@ class Tests(unittest.TestCase):
         def clock(): now[0]+=.01; return now[0]
         with patch.dict(sys.modules, modules), patch.object(sys,'argv',['bridge']), \
              patch.object(b,'initialize'), patch.object(b,'write_register'), \
-             patch.object(b,'read_factory_bias',return_value=(8063,)*3), patch.object(b,'send'), \
+             patch.object(b,'GyroSignal', return_value=types.SimpleNamespace(update=lambda raw, slow, dt, center: tuple((v-8063)/13.768 for v in raw))), \
+             patch.object(b,'send'), \
              patch.object(b.time,'monotonic',side_effect=clock):
             b.main()
         self.assertEqual(pad.frames[0]['left'], (32767,32767))
