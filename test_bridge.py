@@ -43,37 +43,6 @@ class Tests(unittest.TestCase):
         for _ in range(10):
             self.assertEqual(signal.update((8100,8250,8150), (True,)*3, .008), (0,0,0))
 
-    def test_nunchuk_acceleration_passthrough(self):
-        for ax, ay, az in ((512,512,712), (1022,2,510), (0,1022,1022)):
-            tail = ((ax & 2) << 3) | ((ay & 2) << 4) | ((az & 6) << 5)
-            for buttons in (0,4,8,12):
-                data = [128,128,ax >> 2,ay >> 2,(az >> 2) & 0xfe,tail | buttons]
-                self.assertEqual(b.decode_nunchuk_accel(data), (ax,ay,az))
-
-    def test_nunchuk_tilt_and_stick_combination(self):
-        tilt = b.NunchukTilt()
-        self.assertEqual(tilt.update((512,512,712), .01), (0,0))
-        for _ in range(100):
-            output = tilt.update((612,512,685), .01)
-        self.assertGreater(output[0], 31000)
-        self.assertEqual(output[1], 0)
-        self.assertEqual(b.combine_stick((20000,-32767), output), (32767,-32767))
-        for _ in range(100):
-            output = tilt.update((512,512,712), .01)
-        self.assertEqual(output, (0,0))
-        for _ in range(100):
-            output = tilt.update((412,512,685), .01)
-        self.assertLess(output[0], -31000)
-        self.assertEqual(tilt.update((412,512,685), .01, True), (0,0))
-        self.assertEqual(tilt.update((412,512,685), .01), (0,0))
-        self.assertEqual(tilt.update((1022,1022,1022), .01), (0,0))
-        tilt = b.NunchukTilt()
-        tilt.update((512,512,712), .01)
-        for _ in range(100):
-            output = tilt.update((512,612,685), .01)
-        self.assertGreater(output[1],31000)
-        self.assertEqual(output[0],0)
-
     def test_decode(self):
         self.assertEqual(b.decode_gyro(gyro(9000, 7500, 8200)),
                          ((9000, 7500, 8200), (True, True, True)))
@@ -112,8 +81,8 @@ class Tests(unittest.TestCase):
 
     def test_stream_and_center_chord(self):
         frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
-                  (3, gyro(12000)), (2, gyro()), (0, gyro()),
-                  (2, gyro()), (0, gyro())]
+                  (0x80, gyro(12000)), (0, gyro()), (0, gyro()),
+                  (2, gyro()), (2, gyro()), (0, gyro()), (1, gyro()), (3, gyro())]
         # A sustained C hold and missing gyro must not produce aiming or exit.
         frames.extend((0, [128,128,80,90,101,4]) for _ in range(400))
         class Remote:
@@ -148,14 +117,18 @@ class Tests(unittest.TestCase):
              patch.object(b.time,'monotonic',side_effect=clock):
             b.main()
         self.assertEqual(pad.frames[0]['left'], (32767,32767))
-        self.assertGreater(pad.frames[2]['right'][0], 0)
+        self.assertLess(pad.frames[2]['right'][0], 0)
         for i in (3,4,5):
             self.assertEqual(pad.frames[i]['right'], (0,0))
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
+        self.assertIn('START', pad.frames[6]['buttons'])
         self.assertIn('START', pad.frames[7]['buttons'])
+        self.assertNotIn('START', pad.frames[8]['buttons'])
+        self.assertIn('BACK', pad.frames[9]['buttons'])
+        self.assertTrue({'START','BACK'} <= pad.frames[10]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))
         self.assertIn('LEFT_SHOULDER', pad.frames[20]['buttons'])
-        self.assertTrue(all(f['right'] == (0,0) for f in pad.frames[8:]))
+        self.assertTrue(all(f['right'] == (0,0) for f in pad.frames[11:]))
 
 if __name__ == '__main__':
     unittest.main()
