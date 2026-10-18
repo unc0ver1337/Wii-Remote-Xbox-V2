@@ -1,4 +1,4 @@
-"""MotionPlus + Nunchuk to Xbox 360. Hold Home to set the aiming center."""
+"""MotionPlus + Nunchuk to Xbox 360. Press 1 or 2 to center the aim; gyro bias adapts automatically at rest."""
 from __future__ import annotations
 
 import argparse
@@ -51,7 +51,7 @@ class GyroSignal:
         self.filtered = (0.0, 0.0, 0.0)
         self.slow = None
 
-    def update(self, raw, slow, dt, recenter=False):
+    def update(self, raw, slow, dt):
         if any(v < 1000 or v > 15000 for v in raw):
             return None
         if self.slow != slow:
@@ -68,11 +68,6 @@ class GyroSignal:
             if all(slow) and stable:
                 self.bias = med
             return (0.0, 0.0, 0.0)
-        if recenter:
-            if all(slow) and stable:
-                self.bias = med
-            self.filtered = (0.0, 0.0, 0.0)
-            return self.filtered
         rates = tuple((v-b)/13.768 * (1 if flag else 2000/440)
                       for v, b, flag in zip(med, self.bias, slow))
         # No single malformed sample or mode transition may produce a large jump.
@@ -185,16 +180,20 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.3). Nunchuk stick -> left stick; MotionPlus -> right stick.')
-        print('Hold Home to recenter. Ctrl+C to stop.', flush=True)
-        mapping = {0x0002: XB.XUSB_GAMEPAD_START,
-                   0x0001: XB.XUSB_GAMEPAD_BACK,
-                   0x0008: XB.XUSB_GAMEPAD_RIGHT_SHOULDER,
-                   0x0010: XB.XUSB_GAMEPAD_X, 0x1000: XB.XUSB_GAMEPAD_Y}
+        print('Ready (v2.4). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Press 1 or 2 to center. Gyro auto-calibrates at rest. Ctrl+C to stop.', flush=True)
+        mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
+                   0x0200: XB.XUSB_GAMEPAD_B,
+                   0x0400: XB.XUSB_GAMEPAD_A,
+                   0x0100: XB.XUSB_GAMEPAD_X,
+                   0x0010: XB.XUSB_GAMEPAD_BACK,
+                   0x1000: XB.XUSB_GAMEPAD_START,
+                   0x0080: XB.XUSB_GAMEPAD_GUIDE,
+                   0x0008: XB.XUSB_GAMEPAD_RIGHT_SHOULDER}
         last_packet = last_gyro = time.monotonic()
         nunchuk_time = 0.0
         nunchuk = (128, 128, False, False)
-        centering = False
+        center_buttons_previous = 0
         seen_gyro = False
         report_counts = {}
         last_recovery = last_packet
@@ -225,35 +224,35 @@ def main():
                 if report[0] == 0x20 or report[0] in (0x30, 0x31):
                     send(remote, [0x12, 0x04, REPORT_MODE])
             data = extension_payload(report)
-            if data is None:
+            if not report or report[0] != REPORT_MODE or len(report) < 3:
                 continue
             last_packet = now
             buttons = ((report[1] << 8) | report[2]) & 0x1F9F
-            center = bool(buttons & 0x0080)
-            if data[5] & 2:
+            center_buttons = buttons & 3
+            center_pressed = bool(center_buttons & ~center_buttons_previous)
+            center_buttons_previous = center_buttons
+            if data is not None and data[5] & 2:
                 if not data[4] & 1:
                     nunchuk = (128, 128, False, False)
                     nunchuk_time = 0
                 raw, slow = decode_gyro(data)
                 dt = now - last_gyro
-                rates = signal.update(raw, slow, dt, center)
-                if rates is None:
-                    continue
-                last_gyro = now
-                first_gyro = not seen_gyro
-                seen_gyro = True
-                if first_gyro or dt > 0.1:
-                    aim.center()
-                elif not center:
-                    aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
-                               rates[2], min(dt, .02))
-            else:
+                rates = signal.update(raw, slow, dt)
+                if rates is not None:
+                    last_gyro = now
+                    first_gyro = not seen_gyro
+                    seen_gyro = True
+                    if first_gyro or dt > 0.1:
+                        aim.center()
+                    elif not center_pressed:
+                        aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
+                                   rates[2], min(dt, .02))
+            elif data is not None:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now
-            if center or centering:
-                # Also reset on release, so the final held position becomes zero.
+            if center_pressed:
+                # Centering changes orientation only, never the gyro bias.
                 aim.center()
-            centering = center
             pad.reset()
             for mask, target in mapping.items():
                 if buttons & mask:

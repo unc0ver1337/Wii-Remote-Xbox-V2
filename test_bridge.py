@@ -38,10 +38,15 @@ class Tests(unittest.TestCase):
         for _ in range(12):
             rates = signal.update((8500,8227,8124), (True,)*3, .008)
         self.assertGreater(rates[0], 0)
-        for _ in range(6):
-            self.assertEqual(signal.update((8100,8250,8150), (True,)*3, .008, True), (0,0,0))
+        # A new steady bias is learned automatically, without button input.
+        signal = b.GyroSignal()
         for _ in range(10):
-            self.assertEqual(signal.update((8100,8250,8150), (True,)*3, .008), (0,0,0))
+            signal.update((8100,8250,8150), (True,)*3, .008)
+        old_bias = signal.bias
+        for _ in range(250):
+            signal.update((8105,8255,8155), (True,)*3, .008)
+        self.assertGreater(signal.bias[0], old_bias[0])
+        self.assertLess(abs(signal.bias[0]-8105), 1)
 
     def test_decode(self):
         self.assertEqual(b.decode_gyro(gyro(9000, 7500, 8200)),
@@ -81,8 +86,10 @@ class Tests(unittest.TestCase):
 
     def test_stream_and_center_chord(self):
         frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
-                  (0x80, gyro(12000)), (0, gyro()), (0, gyro()),
-                  (2, gyro()), (2, gyro()), (0, gyro()), (1, gyro()), (3, gyro())]
+                  (1, gyro(12000)), (0, gyro()), (0, gyro()),
+                  (2, gyro()), (0, gyro()), (0x0800, gyro()),
+                  (0x0200, gyro()), (0x0400, gyro()), (0x0100, gyro()),
+                  (0x0010, gyro()), (0x1000, gyro()), (0x0080, gyro())]
         # A sustained C hold and missing gyro must not produce aiming or exit.
         frames.extend((0, [128,128,80,90,101,4]) for _ in range(400))
         class Remote:
@@ -104,7 +111,7 @@ class Tests(unittest.TestCase):
             def update(self): self.frames.append(self.state.copy())
         pad=Pad()
         buttons=types.SimpleNamespace(**{f'XUSB_GAMEPAD_{n}':n for n in
-            ['RIGHT_SHOULDER','LEFT_SHOULDER','X','Y','START','BACK']})
+            ['RIGHT_SHOULDER','LEFT_SHOULDER','A','B','X','Y','START','BACK','GUIDE']})
         modules={'hid':types.SimpleNamespace(enumerate=lambda *a:[{'product_id':0x0330,'path':b'test'}],device=Remote),
                  'vgamepad':types.SimpleNamespace(VX360Gamepad=lambda:pad),
                  'vgamepad.win.vigem_commons':types.SimpleNamespace(XUSB_BUTTON=buttons)}
@@ -112,7 +119,7 @@ class Tests(unittest.TestCase):
         def clock(): now[0]+=.01; return now[0]
         with patch.dict(sys.modules, modules), patch.object(sys,'argv',['bridge']), \
              patch.object(b,'initialize'), patch.object(b,'write_register'), \
-             patch.object(b,'GyroSignal', return_value=types.SimpleNamespace(update=lambda raw, slow, dt, center: tuple((v-8063)/13.768 for v in raw))), \
+             patch.object(b,'GyroSignal', return_value=types.SimpleNamespace(update=lambda raw, slow, dt: tuple((v-8063)/13.768 for v in raw))), \
              patch.object(b,'send'), \
              patch.object(b.time,'monotonic',side_effect=clock):
             b.main()
@@ -121,14 +128,14 @@ class Tests(unittest.TestCase):
         for i in (3,4,5):
             self.assertEqual(pad.frames[i]['right'], (0,0))
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
-        self.assertIn('START', pad.frames[6]['buttons'])
-        self.assertIn('START', pad.frames[7]['buttons'])
-        self.assertNotIn('START', pad.frames[8]['buttons'])
-        self.assertIn('BACK', pad.frames[9]['buttons'])
-        self.assertTrue({'START','BACK'} <= pad.frames[10]['buttons'])
+        self.assertEqual(pad.frames[6]['right'], (0,0))
+        for i in (3,6):
+            self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
+        for i, button in enumerate(('Y','B','A','X','BACK','START','GUIDE'), start=8):
+            self.assertIn(button, pad.frames[i]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))
         self.assertIn('LEFT_SHOULDER', pad.frames[20]['buttons'])
-        self.assertTrue(all(f['right'] == (0,0) for f in pad.frames[11:]))
+        self.assertTrue(all(f['right'] == (0,0) for f in pad.frames[15:]))
 
 if __name__ == '__main__':
     unittest.main()
