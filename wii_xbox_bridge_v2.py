@@ -89,7 +89,7 @@ def multiply(a, b):
 
 
 class Aim:
-    def __init__(self, full_angle=12.5, deadzone=0.35):
+    def __init__(self, full_angle=8.0, deadzone=0.35):
         self.full_angle = full_angle
         self.deadzone = deadzone
         self.center()
@@ -204,7 +204,7 @@ def initialize(remote):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--full-angle', type=float, default=12.5, help='Degrees for full stick deflection')
+    parser.add_argument('--full-angle', type=float, default=8, help='Degrees for full stick deflection')
     parser.add_argument('--deadzone', type=float, default=0.35, help='Aim deadzone in degrees')
     parser.add_argument('--yaw-sign', type=int, choices=(-1, 1), default=1)
     parser.add_argument('--pitch-sign', type=int, choices=(-1, 1), default=1)
@@ -230,7 +230,7 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.11 Dolphin correction + auto-center 1s / 25 deg/s). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Ready (v2.12 sensitivity 8 deg + auto-center). Nunchuk stick -> left stick; MotionPlus -> right stick.')
         print('1/2 unassigned. Automatic gravity correction and gyro calibration. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,

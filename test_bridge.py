@@ -69,8 +69,8 @@ class Tests(unittest.TestCase):
         aim.correct_orientation(None, .01)
         at_edge = aim.stick()[0]
         self.assertAlmostEqual(at_edge,32767,delta=1)
-        self.assertAlmostEqual(aim.full_angle,12.5)
-        aim.update(-5,0,0,1)
+        self.assertAlmostEqual(aim.full_angle,8.0)
+        aim.update(-6,0,0,1)
         aim.correct_orientation(None,.01)
         self.assertLess(aim.stick()[0], at_edge)
 
@@ -97,7 +97,7 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(aim.stick(), (0,0))
         aim.auto_center((0,0,0), 1)
         self.assertEqual(aim.quiet_time, 0)
-        self.assertEqual(aim.full_angle, 12.5)
+        self.assertEqual(aim.full_angle, 8.0)
 
     def test_aim(self):
         for sign in (-1, 1):
