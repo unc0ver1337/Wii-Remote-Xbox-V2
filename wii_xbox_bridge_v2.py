@@ -109,20 +109,16 @@ class Aim:
             self.q = tuple(v/norm for v in self.q)
 
     def auto_center(self, rates, dt):
-        # Require consecutive quiet gyro samples; wall-clock gaps do not count.
-        if not 0 < dt <= .1 or math.sqrt(sum(v*v for v in rates)) > 3.0:
+        # Buffered reports may share a timestamp; they must not reset the timer.
+        if dt <= 0:
+            return
+        if dt > .1 or math.sqrt(sum(v*v for v in rates)) > 25.0:
             self.quiet_time = 0.0
             return
         self.quiet_time += dt
-        if self.quiet_time < .45:
-            return
-        # Shortest quaternion path to the current centered orientation.
-        q = self.q if self.q[0] >= 0 else tuple(-v for v in self.q)
-        keep = math.exp(-dt/.12)
-        blended = (1+(q[0]-1)*keep, *(v*keep for v in q[1:]))
-        norm = math.sqrt(sum(v*v for v in blended))
-        self.q = tuple(v/norm for v in blended)
-        if sum(v*v for v in self.q[1:]) < 1e-8:
+        if self.quiet_time + 1e-9 >= 1.0:
+            # Keep the output exactly neutral despite small ongoing hand motion.
+            # Do not call center(): it would reset the one-second quiet timer.
             self.q = (1.0, 0.0, 0.0, 0.0)
 
     def stick(self):
@@ -198,7 +194,7 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.6 sharp + auto-center). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Ready (v2.7 auto-center 1s / 25 deg/s). Nunchuk stick -> left stick; MotionPlus -> right stick.')
         print('Press 1 or 2 to center. Gyro auto-calibrates at rest. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,

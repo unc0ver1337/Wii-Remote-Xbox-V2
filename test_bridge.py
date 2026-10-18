@@ -60,20 +60,23 @@ class Tests(unittest.TestCase):
         aim = b.Aim()
         aim.update(12,0,0,1)
         original = aim.stick()
-        for _ in range(40):
-            aim.auto_center((0,0,0), .01)
+        for _ in range(99):
+            aim.auto_center((15,10,5), .01)
+            aim.auto_center((15,10,5), 0)  # Buffered packets do not erase elapsed time.
         self.assertEqual(aim.stick(), original)
-        for _ in range(10):
-            aim.auto_center((0,0,0), .01)
-        self.assertGreater(aim.stick()[0], 0)
-        self.assertLess(aim.stick()[0], original[0])
-        paused = aim.stick()
-        aim.auto_center((10,0,0), .01)
+        aim.auto_center((15,10,5), .01)
+        self.assertEqual(aim.stick(), (0,0))
+        for _ in range(20):
+            aim.update(15,10,5,.01)
+            aim.auto_center((15,10,5), .01)
+            self.assertEqual(aim.stick(), (0,0))
+        aim.update(40,0,0,.01)
+        aim.auto_center((40,0,0), .01)
         self.assertEqual(aim.quiet_time, 0)
-        self.assertEqual(aim.stick(), paused)
+        self.assertNotEqual(aim.stick(), (0,0))
         aim.auto_center((0,0,0), 1)
         self.assertEqual(aim.quiet_time, 0)
-        for _ in range(200):
+        for _ in range(100):
             aim.auto_center((0,0,0), .01)
         self.assertEqual(aim.stick(), (0,0))
 
