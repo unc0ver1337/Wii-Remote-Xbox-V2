@@ -56,29 +56,22 @@ class Tests(unittest.TestCase):
         self.assertEqual(b.decode_nunchuk([255, 0, 0, 0, 1, 12]), (255, 0, False, False))
         self.assertEqual(b.decode_nunchuk([128, 128, 0, 0, 1, 0]), (128, 128, True, True))
 
-    def test_auto_center_only_after_quiet_hold(self):
+    def test_gravity_correction_and_yaw_clamp(self):
         aim = b.Aim()
-        aim.update(12,0,0,1)
-        original = aim.stick()
-        for _ in range(99):
-            aim.auto_center((15,10,5), .01)
-            aim.auto_center((15,10,5), 0)  # Buffered packets do not erase elapsed time.
-        self.assertEqual(aim.stick(), original)
-        aim.auto_center((15,10,5), .01)
-        self.assertEqual(aim.stick(), (0,0))
-        for _ in range(20):
-            aim.update(15,10,5,.01)
-            aim.auto_center((15,10,5), .01)
-            self.assertEqual(aim.stick(), (0,0))
-        aim.update(40,0,0,.01)
-        aim.auto_center((40,0,0), .01)
-        self.assertEqual(aim.quiet_time, 0)
-        self.assertNotEqual(aim.stick(), (0,0))
-        aim.auto_center((0,0,0), 1)
-        self.assertEqual(aim.quiet_time, 0)
-        for _ in range(100):
-            aim.auto_center((0,0,0), .01)
-        self.assertEqual(aim.stick(), (0,0))
+        aim.correct_orientation((128,128,154), .01)
+        aim.update(0,10,0,1)
+        before = abs(aim.stick()[1])
+        for _ in range(200):
+            aim.correct_orientation((128,128,154), .01)
+        self.assertLess(abs(aim.stick()[1]), before)
+        self.assertEqual(aim.stick()[1], 0)
+        aim.update(100,0,0,1)
+        aim.correct_orientation(None, .01)
+        at_edge = aim.stick()[0]
+        self.assertAlmostEqual(at_edge,32767,delta=1)
+        aim.update(-5,0,0,1)
+        aim.correct_orientation(None,.01)
+        self.assertLess(aim.stick()[0], at_edge)
 
     def test_aim(self):
         for sign in (-1, 1):
@@ -110,7 +103,7 @@ class Tests(unittest.TestCase):
 
     def test_stream_and_center_chord(self):
         frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
-                  (1, gyro(12000)), (0, gyro()), (0, gyro()),
+                  (1, gyro()), (0, gyro()), (0, gyro()),
                   (2, gyro()), (0, gyro()), (0x0800, gyro()),
                   (0x0200, gyro()), (0x0400, gyro()), (0x0100, gyro()),
                   (0x0010, gyro()), (0x1000, gyro()), (0x0080, gyro())]
@@ -149,17 +142,14 @@ class Tests(unittest.TestCase):
             b.main()
         self.assertEqual(pad.frames[0]['left'], (32767,32767))
         self.assertLess(pad.frames[2]['right'][0], 0)
-        for i in (3,4,5):
-            self.assertEqual(pad.frames[i]['right'], (0,0))
-            self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
-        self.assertEqual(pad.frames[6]['right'], (0,0))
         for i in (3,6):
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
+        self.assertLess(pad.frames[3]['right'][0],0)
         for i, button in enumerate(('Y','B','A','X','BACK','START','GUIDE'), start=8):
             self.assertIn(button, pad.frames[i]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))
         self.assertIn('LEFT_SHOULDER', pad.frames[20]['buttons'])
-        self.assertTrue(all(f['right'] == (0,0) for f in pad.frames[15:]))
+        self.assertEqual(pad.frames[-1]['right'], (0,0))
 
 if __name__ == '__main__':
     unittest.main()
