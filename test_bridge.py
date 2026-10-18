@@ -73,6 +73,29 @@ class Tests(unittest.TestCase):
         aim.correct_orientation(None,.01)
         self.assertLess(aim.stick()[0], at_edge)
 
+    def test_auto_center_after_one_second_with_small_motion(self):
+        aim = b.Aim()
+        aim.correct_orientation((128,128,154), .01)
+        aim.update(12,0,0,1)
+        for _ in range(99):
+            aim.auto_center((15,10,5), .01)
+            aim.auto_center((15,10,5), 0)
+        self.assertNotEqual(aim.stick(), (0,0))
+        aim.auto_center((15,10,5), .01)
+        self.assertEqual(aim.stick(), (0,0))
+        self.assertIsNone(aim.gravity_reference)
+        for _ in range(20):
+            aim.update(15,10,5,.01)
+            aim.correct_orientation((128,128,154), .01)
+            aim.auto_center((15,10,5), .01)
+            self.assertEqual(aim.stick(), (0,0))
+        aim.update(40,0,0,.01)
+        aim.auto_center((40,0,0), .01)
+        self.assertEqual(aim.quiet_time, 0)
+        self.assertNotEqual(aim.stick(), (0,0))
+        aim.auto_center((0,0,0), 1)
+        self.assertEqual(aim.quiet_time, 0)
+
     def test_aim(self):
         for sign in (-1, 1):
             a = b.Aim()

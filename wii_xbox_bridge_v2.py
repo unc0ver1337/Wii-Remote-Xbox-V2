@@ -97,6 +97,7 @@ class Aim:
     def center(self):
         self.q = (1.0, 0.0, 0.0, 0.0)
         self.gravity_reference = None
+        self.quiet_time = 0.0
 
     def update(self, yaw, pitch, roll, dt):
         # Body axes: X right, Y forward along the remote, Z up.
@@ -107,6 +108,18 @@ class Aim:
             self.q = multiply(self.q, (math.cos(angle / 2), *(v*f for v in vector)))
             norm = math.sqrt(sum(v*v for v in self.q))
             self.q = tuple(v/norm for v in self.q)
+
+    def auto_center(self, rates, dt):
+        if dt <= 0:
+            return
+        if dt > .1 or math.sqrt(sum(v*v for v in rates)) > 25.0:
+            self.quiet_time = 0.0
+            return
+        self.quiet_time += dt
+        if self.quiet_time + 1e-9 >= 1.0:
+            self.q = (1.0, 0.0, 0.0, 0.0)
+            # Anchor gravity to the new center, not the previous aiming direction.
+            self.gravity_reference = None
 
     def correct_orientation(self, accelerometer, dt):
         """Dolphin-style sensor fusion and bounded yaw, rather than a rest timer.
@@ -217,7 +230,7 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.8 gravity correction + yaw clamp). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Ready (v2.9 auto-center 1s / 25 deg/s). Nunchuk stick -> left stick; MotionPlus -> right stick.')
         print('1/2 unassigned. Automatic gravity correction and gyro calibration. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,
@@ -281,6 +294,7 @@ def main():
                         aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
                                    rates[2], min(dt, .02))
                         aim.correct_orientation(report[3:6] if len(report) >= 6 else None, dt)
+                        aim.auto_center(rates, dt)
             elif data is not None:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now
