@@ -3,8 +3,23 @@ from __future__ import annotations
 
 import argparse
 import math
+import statistics
 import sys
 import time
+
+
+REPORT_MODE = 0x37
+EXTENSION_OFFSET = 16
+
+
+def extension_payload(report):
+    """Only accept tagged MotionPlus passthrough packets from the selected mode."""
+    if not report or report[0] != REPORT_MODE or len(report) < EXTENSION_OFFSET + 6:
+        return None
+    data = report[EXTENSION_OFFSET:EXTENSION_OFFSET+6]
+    if data[5] & 1 or list(data) in ([0]*6, [255]*6):
+        return None
+    return data
 
 
 def axis(value, center=128, deadzone=7):
@@ -96,7 +111,7 @@ def initialize(remote):
     time.sleep(0.1)
     write_register(remote, 0x04A600FE, 0x05)
     time.sleep(0.2)
-    send(remote, [0x12, 0x04, 0x34])
+    send(remote, [0x12, 0x04, REPORT_MODE])
 
 
 def read_factory_bias(remote):
@@ -110,7 +125,7 @@ def read_factory_bias(remote):
         if not report:
             continue
         if report[0] == 0x20:
-            send(remote, [0x12, 0x04, 0x34])
+            send(remote, [0x12, 0x04, REPORT_MODE])
         if report[0] != 0x21 or len(report) < 6:
             continue
         if report[3] & 15:
@@ -128,8 +143,8 @@ def read_factory_bias(remote):
             if all(4000 < v < 12000 for v in (yaw, pitch, roll)):
                 return yaw, pitch, roll
             break
-    print('Factory gyro offsets unavailable; using nominal offsets.', flush=True)
-    return (8063.0,) * 3
+    print('Factory offsets unavailable; first valid gyro packet sets the baseline.', flush=True)
+    return None
 
 
 def main():
@@ -157,7 +172,7 @@ def main():
         remote.set_nonblocking(False)
         initialize(remote)
         bias = read_factory_bias(remote)
-        send(remote, [0x12, 0x04, 0x34])
+        send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
         print('Ready. Nunchuk -> left stick; MotionPlus -> right stick.')
@@ -172,31 +187,60 @@ def main():
         combo_used = False
         seen_gyro = False
         report_counts = {}
+        center_samples = []
+        last_recovery = last_packet
         while True:
             report = remote.read(64, 100)
             now = time.monotonic()
-            if now - last_packet > 3 or now - last_gyro > (1 if seen_gyro else 3):
-                raise RuntimeError('MotionPlus data stream unavailable. '
-                                   f'Report counts: {report_counts}. '
-                                   'Wake the remote and close other Wii programs, then restart.')
+            if now - last_gyro > 0.3:
+                aim.center()
+            if now - last_packet > 0.3:
+                pad.reset()
+                pad.update()
+            if now - last_gyro > 3 and now - last_recovery > 3:
+                last_recovery = now
+                pad.reset()
+                pad.update()
+                aim.center()
+                print(f'Waiting for MotionPlus; retrying stream. Reports: {report_counts}', flush=True)
+                try:
+                    initialize(remote)
+                except (OSError, RuntimeError) as exc:
+                    print(f'Stream recovery: {exc}', flush=True)
+                last_gyro = time.monotonic()
+                seen_gyro = False
             if report:
                 report_counts[hex(report[0])] = report_counts.get(hex(report[0]), 0) + 1
                 # Extension changes can reset the reporting mode after activation.
                 if report[0] == 0x20 or report[0] in (0x30, 0x31):
-                    send(remote, [0x12, 0x04, 0x34])
-            if not report or report[0] != 0x34 or len(report) < 9:
+                    send(remote, [0x12, 0x04, REPORT_MODE])
+            data = extension_payload(report)
+            if data is None:
                 continue
             last_packet = now
             buttons = ((report[1] << 8) | report[2]) & 0x1F9F
             center = buttons & 3 == 3
-            data = report[3:9]
-            if data == [255]*6 or data == [0]*6:
-                continue
             if data[5] & 2:
                 if not data[4] & 1:
                     nunchuk = (128, 128, False, False)
                     nunchuk_time = 0
                 raw, slow = decode_gyro(data)
+                # Corrupt/transitional ADC extremes must never move the stick.
+                if any(v < 1000 or v > 15000 for v in raw):
+                    continue
+                if bias is None:
+                    if not all(slow):
+                        continue
+                    bias = tuple(raw)
+                if center and all(slow):
+                    center_samples.append(raw)
+                    center_samples = center_samples[-40:]
+                    if len(center_samples) >= 15:
+                        columns = list(zip(*center_samples))
+                        if all(max(c)-min(c) < 40 for c in columns):
+                            bias = tuple(statistics.median(c) for c in columns)
+                elif not center:
+                    center_samples.clear()
                 dt = now - last_gyro
                 last_gyro = now
                 first_gyro = not seen_gyro

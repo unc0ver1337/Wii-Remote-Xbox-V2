@@ -18,6 +18,16 @@ def gyro(yaw=8063, pitch=8063, roll=8063):
 
 
 class Tests(unittest.TestCase):
+    def test_reject_ordinary_nunchuk_when_c_changes(self):
+        # Captured legacy packet: C occupies the bit previously mistaken for gyro.
+        for last in (0x27, 0x25, 0x8b, 0x89):
+            data = [0x80, 0x80, 0xbc, 0x88, 0x94, last]
+            self.assertIsNone(b.extension_payload([0x34, 0, 0, *data]))
+            self.assertIsNone(b.extension_payload([0x37, 0, 0, *([0]*13), *data]))
+        for last in (0, 4, 8, 12):
+            data = [128, 128, 80, 90, 101, last]
+            self.assertEqual(b.extension_payload([0x37, 0, 0, *([0]*13), *data]), data)
+
     def test_decode(self):
         self.assertEqual(b.decode_gyro(gyro(9000, 7500, 8200)),
                          ((9000, 7500, 8200), (True, True, True)))
@@ -61,14 +71,16 @@ class Tests(unittest.TestCase):
         remote = types.SimpleNamespace(write=lambda p: sent.append(p) or len(p),
                                        read=lambda *a: reports.pop(0))
         self.assertEqual(b.read_factory_bias(remote), (8000, 8200, 8100))
-        self.assertIn([0x12, 0x04, 0x34], sent)
+        self.assertIn([0x12, 0x04, b.REPORT_MODE], sent)
         remote.read = lambda *a: [0x21, 0, 0, 7, 0, 0x30]
-        self.assertEqual(b.read_factory_bias(remote), (8063,)*3)
+        self.assertIsNone(b.read_factory_bias(remote))
 
     def test_stream_and_center_chord(self):
         frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
                   (3, gyro(12000)), (2, gyro()), (0, gyro()),
                   (2, gyro()), (0, gyro())]
+        # A sustained C hold and missing gyro must not produce aiming or exit.
+        frames.extend((0, [128,128,80,90,101,4]) for _ in range(400))
         class Remote:
             def open_path(self, p): pass
             def set_nonblocking(self, v): pass
@@ -76,7 +88,7 @@ class Tests(unittest.TestCase):
             def read(self, *args):
                 if not frames: raise KeyboardInterrupt
                 buttons, data = frames.pop(0)
-                return [0x34, buttons >> 8, buttons & 255, *data]
+                return [b.REPORT_MODE, buttons >> 8, buttons & 255, *([0]*13), *data]
         class Pad:
             def __init__(self): self.frames=[]
             def reset(self): self.state={'buttons':set(), 'left':(0,0),'right':(0,0)}
@@ -106,6 +118,8 @@ class Tests(unittest.TestCase):
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
         self.assertIn('START', pad.frames[7]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))
+        self.assertIn('LEFT_SHOULDER', pad.frames[20]['buttons'])
+        self.assertTrue(all(f['right'] == (0,0) for f in pad.frames[8:]))
 
 if __name__ == '__main__':
     unittest.main()
