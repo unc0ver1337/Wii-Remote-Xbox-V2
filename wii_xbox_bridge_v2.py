@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import statistics
 import sys
 import time
 
@@ -100,26 +99,37 @@ def initialize(remote):
     send(remote, [0x12, 0x04, 0x34])
 
 
-def calibrate(remote):
-    print('Keep Wii Remote still for 2 seconds...', flush=True)
-    samples = []
-    start = time.monotonic()
-    while time.monotonic() - start < 2.0:
+def read_factory_bias(remote):
+    """Read the factory slow-mode zero values; never ask the user to hold still."""
+    address, size = 0x04A40030, 6
+    send(remote, [0x17, *address.to_bytes(4, 'big'), 0, size])
+    deadline = time.monotonic() + 1
+    result = {}
+    while time.monotonic() < deadline:
         report = remote.read(64, 100)
-        if report and report[0] == 0x34 and len(report) >= 9:
-            data = report[3:9]
-            if data == [255]*6 or data == [0]*6:
-                continue
-            if data[5] & 2:
-                raw, slow = decode_gyro(data)
-                if all(slow):
-                    samples.append(raw)
-    if len(samples) < 20:
-        raise RuntimeError('Not enough MotionPlus samples. Check connection and restart.')
-    columns = list(zip(*samples))
-    if any(statistics.pstdev(c) > 30 for c in columns):
-        raise RuntimeError('Remote moved during calibration. Keep it still and restart.')
-    return tuple(statistics.mean(c) for c in columns)
+        if not report:
+            continue
+        if report[0] == 0x20:
+            send(remote, [0x12, 0x04, 0x34])
+        if report[0] != 0x21 or len(report) < 6:
+            continue
+        if report[3] & 15:
+            break
+        count = (report[3] >> 4) + 1
+        offset = (report[4] << 8) | report[5]
+        for i, value in enumerate(report[6:6+count]):
+            if 0x30 <= offset+i < 0x36:
+                result[offset+i-0x30] = value
+        if len(result) == size:
+            raw = bytes(result[i] for i in range(size))
+            # Factory zero readings use 16-bit precision; stream uses 14-bit.
+            yaw, roll, pitch = [int.from_bytes(raw[i:i+2], 'big') / 4
+                                for i in (0, 2, 4)]
+            if all(4000 < v < 12000 for v in (yaw, pitch, roll)):
+                return yaw, pitch, roll
+            break
+    print('Factory gyro offsets unavailable; using nominal offsets.', flush=True)
+    return (8063.0,) * 3
 
 
 def main():
@@ -146,7 +156,8 @@ def main():
         opened = True
         remote.set_nonblocking(False)
         initialize(remote)
-        bias = calibrate(remote)
+        bias = read_factory_bias(remote)
+        send(remote, [0x12, 0x04, 0x34])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
         print('Ready. Nunchuk -> left stick; MotionPlus -> right stick.')
@@ -159,11 +170,20 @@ def main():
         centering = False
         pending_buttons = 0
         combo_used = False
+        seen_gyro = False
+        report_counts = {}
         while True:
             report = remote.read(64, 100)
             now = time.monotonic()
-            if now - last_packet > 1 or now - last_gyro > 1:
-                raise RuntimeError('MotionPlus stream lost. Controller released; restart bridge.')
+            if now - last_packet > 3 or now - last_gyro > (1 if seen_gyro else 3):
+                raise RuntimeError('MotionPlus data stream unavailable. '
+                                   f'Report counts: {report_counts}. '
+                                   'Wake the remote and close other Wii programs, then restart.')
+            if report:
+                report_counts[hex(report[0])] = report_counts.get(hex(report[0]), 0) + 1
+                # Extension changes can reset the reporting mode after activation.
+                if report[0] == 0x20 or report[0] in (0x30, 0x31):
+                    send(remote, [0x12, 0x04, 0x34])
             if not report or report[0] != 0x34 or len(report) < 9:
                 continue
             last_packet = now
@@ -179,7 +199,9 @@ def main():
                 raw, slow = decode_gyro(data)
                 dt = now - last_gyro
                 last_gyro = now
-                if dt > 0.25:
+                first_gyro = not seen_gyro
+                seen_gyro = True
+                if first_gyro or dt > 0.25:
                     aim.center()
                 elif not center:
                     rates = [(v-b)/13.768 * (1 if s else 2000/440)

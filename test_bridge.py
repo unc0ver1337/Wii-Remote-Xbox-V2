@@ -54,8 +54,19 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             b.write_register(remote, 0x04A600FE, 5)
 
+    def test_factory_offsets_without_stationary_sampling(self):
+        raw = b''.join(int(v*4).to_bytes(2, 'big') for v in (8000, 8100, 8200))
+        reports = [[0x20, 0, 0], [0x21, 0, 0, 0x50, 0, 0x30, *raw]]
+        sent = []
+        remote = types.SimpleNamespace(write=lambda p: sent.append(p) or len(p),
+                                       read=lambda *a: reports.pop(0))
+        self.assertEqual(b.read_factory_bias(remote), (8000, 8200, 8100))
+        self.assertIn([0x12, 0x04, 0x34], sent)
+        remote.read = lambda *a: [0x21, 0, 0, 7, 0, 0x30]
+        self.assertEqual(b.read_factory_bias(remote), (8063,)*3)
+
     def test_stream_and_center_chord(self):
-        frames = [(0, [255,255,0,0,1,0]), (0, gyro(12000)),
+        frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
                   (3, gyro(12000)), (2, gyro()), (0, gyro()),
                   (2, gyro()), (0, gyro())]
         class Remote:
@@ -85,15 +96,15 @@ class Tests(unittest.TestCase):
         def clock(): now[0]+=.01; return now[0]
         with patch.dict(sys.modules, modules), patch.object(sys,'argv',['bridge']), \
              patch.object(b,'initialize'), patch.object(b,'write_register'), \
-             patch.object(b,'calibrate',return_value=(8063,)*3), \
+             patch.object(b,'read_factory_bias',return_value=(8063,)*3), patch.object(b,'send'), \
              patch.object(b.time,'monotonic',side_effect=clock):
             b.main()
         self.assertEqual(pad.frames[0]['left'], (32767,32767))
-        self.assertGreater(pad.frames[1]['right'][0], 0)
-        for i in (2,3,4):
+        self.assertGreater(pad.frames[2]['right'][0], 0)
+        for i in (3,4,5):
             self.assertEqual(pad.frames[i]['right'], (0,0))
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
-        self.assertIn('START', pad.frames[6]['buttons'])
+        self.assertIn('START', pad.frames[7]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))
 
 if __name__ == '__main__':
