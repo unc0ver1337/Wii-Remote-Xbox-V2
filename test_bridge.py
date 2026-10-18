@@ -56,6 +56,27 @@ class Tests(unittest.TestCase):
         self.assertEqual(b.decode_nunchuk([255, 0, 0, 0, 1, 12]), (255, 0, False, False))
         self.assertEqual(b.decode_nunchuk([128, 128, 0, 0, 1, 0]), (128, 128, True, True))
 
+    def test_auto_center_only_after_quiet_hold(self):
+        aim = b.Aim()
+        aim.update(12,0,0,1)
+        original = aim.stick()
+        for _ in range(40):
+            aim.auto_center((0,0,0), .01)
+        self.assertEqual(aim.stick(), original)
+        for _ in range(10):
+            aim.auto_center((0,0,0), .01)
+        self.assertGreater(aim.stick()[0], 0)
+        self.assertLess(aim.stick()[0], original[0])
+        paused = aim.stick()
+        aim.auto_center((10,0,0), .01)
+        self.assertEqual(aim.quiet_time, 0)
+        self.assertEqual(aim.stick(), paused)
+        aim.auto_center((0,0,0), 1)
+        self.assertEqual(aim.quiet_time, 0)
+        for _ in range(200):
+            aim.auto_center((0,0,0), .01)
+        self.assertEqual(aim.stick(), (0,0))
+
     def test_aim(self):
         for sign in (-1, 1):
             a = b.Aim()
