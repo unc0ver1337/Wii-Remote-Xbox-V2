@@ -62,7 +62,7 @@ class GyroSignal:
         self.samples = self.samples[-5:]
         if len(self.samples) < 5:
             return (0.0, 0.0, 0.0)
-        med = tuple(statistics.median(c) for c in zip(*self.samples))
+        med = tuple(statistics.median(c) for c in zip(*self.samples[-3:]))
         stable = all(max(c)-min(c) <= 30 for c in zip(*self.samples))
         if self.bias is None:
             if all(slow) and stable:
@@ -76,7 +76,7 @@ class GyroSignal:
         if all(slow) and stable and all(abs(v) < 1.5 for v in rates):
             self.bias = tuple(b + .02*(v-b) for b, v in zip(self.bias, med))
         rates = tuple(0.0 if abs(v) < 1.0 else v for v in rates)
-        alpha = 1-math.exp(-max(0, min(dt, .02))/.025)
+        alpha = 1-math.exp(-max(0, min(dt, .02))/.006)
         self.filtered = tuple(old+alpha*(new-old) for old, new in zip(self.filtered, rates))
         return self.filtered
 
@@ -89,7 +89,7 @@ def multiply(a, b):
 
 
 class Aim:
-    def __init__(self, full_angle=30.0, deadzone=1.5):
+    def __init__(self, full_angle=15.0, deadzone=0.35):
         self.full_angle = full_angle
         self.deadzone = deadzone
         self.center()
@@ -154,8 +154,8 @@ def initialize(remote):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--full-angle', type=float, default=30, help='Degrees for full stick deflection')
-    parser.add_argument('--deadzone', type=float, default=1.5, help='Aim deadzone in degrees')
+    parser.add_argument('--full-angle', type=float, default=15, help='Degrees for full stick deflection')
+    parser.add_argument('--deadzone', type=float, default=0.35, help='Aim deadzone in degrees')
     parser.add_argument('--yaw-sign', type=int, choices=(-1, 1), default=1)
     parser.add_argument('--pitch-sign', type=int, choices=(-1, 1), default=1)
     args = parser.parse_args()
@@ -180,7 +180,7 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.4). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Ready (v2.5 sharp). Nunchuk stick -> left stick; MotionPlus -> right stick.')
         print('Press 1 or 2 to center. Gyro auto-calibrates at rest. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,
