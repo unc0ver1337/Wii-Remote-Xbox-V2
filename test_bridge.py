@@ -58,37 +58,28 @@ class Tests(unittest.TestCase):
         self.assertEqual(b.decode_nunchuk([255, 0, 0, 0, 1, 12]), (255, 0, False, False))
         self.assertEqual(b.decode_nunchuk([128, 128, 0, 0, 1, 0]), (128, 128, True, True))
 
-    def test_gravity_correction_and_yaw_clamp(self):
-        aim = b.Aim()
-        aim.correct_orientation((128,128,154), .01)
-        aim.update(0,10,0,1)
-        before = abs(aim.stick()[1])
-        for _ in range(200):
-            aim.correct_orientation((128,128,154), .01)
-        self.assertLess(abs(aim.stick()[1]), before)
-        self.assertEqual(aim.stick()[1], 0)
-        aim.update(100,0,0,1)
-        aim.correct_orientation(None, .01)
-        at_edge = aim.stick()[0]
-        self.assertAlmostEqual(at_edge,32767,delta=1)
-        self.assertAlmostEqual(aim.full_angle,8.0)
-        aim.update(-6,0,0,1)
-        aim.correct_orientation(None,.01)
-        self.assertLess(aim.stick()[0], at_edge)
-
-    def test_aim(self):
-        for sign in (-1, 1):
-            a = b.Aim()
-            a.update(sign*30, 0, 0, 1)
-            self.assertAlmostEqual(a.stick()[0], sign*32767, delta=1)
-            a.update(-sign*30, 0, 0, 1)
-            self.assertEqual(a.stick(), (0, 0))
-            a.update(0, sign*30, 0, 1)
-            self.assertAlmostEqual(a.stick()[1], sign*32767, delta=1)
-            a.center()
-            self.assertEqual(a.stick(), (0, 0))
-        a = b.Aim(); a.update(0, 0, 90, 1)
-        self.assertEqual(a.stick(), (0, 0))
+    def test_velocity_immediate_response_stop_and_noise_gate(self):
+        aim = b.VelocityAim()
+        aim.update(90, -90)
+        self.assertEqual(aim.stick(), (32767,-32767))
+        aim.update(0,0)
+        self.assertEqual(aim.stick(), (0,0))
+        for rate in (0.4,-1.5,1.9,-1.9):
+            aim.update(rate,rate)
+            self.assertEqual(aim.stick(),(0,0))
+        aim.update(45,-45)
+        self.assertGreater(aim.stick()[0], 15000)
+        self.assertLess(aim.stick()[1], -15000)
+        aim.update(-45,45)
+        self.assertLess(aim.stick()[0], -15000)
+        self.assertGreater(aim.stick()[1], 15000)
+        aim.update(.9,-.9)
+        self.assertEqual(aim.stick(),(0,0))
+        aim.update(90,90)
+        aim.center()
+        self.assertEqual(aim.stick(),(0,0))
+        aim.update(45,0)
+        self.assertGreater(aim.stick()[0], 0)
 
     def test_nunchuk_normal(self):
         self.assertEqual((b.axis(0), b.axis(128), b.axis(255)), (-32767, 0, 32767))
@@ -148,6 +139,7 @@ class Tests(unittest.TestCase):
         for i in (3,6):
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
         self.assertEqual(pad.frames[3]['right'], (0,0))
+        self.assertEqual(pad.frames[4]['right'], (0,0))
         self.assertEqual(pad.frames[6]['right'], (0,0))
         for i, button in enumerate(('Y','B','A','X','BACK','START','GUIDE'), start=8):
             self.assertIn(button, pad.frames[i]['buttons'])

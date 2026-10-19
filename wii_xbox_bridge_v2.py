@@ -1,4 +1,4 @@
-"""MotionPlus + Nunchuk to Xbox 360. MotionPlus aiming with automatic gravity correction and bounded yaw."""
+"""MotionPlus + Nunchuk to Xbox 360. Direct MotionPlus angular velocity to Xbox right stick."""
 from __future__ import annotations
 
 import argparse
@@ -72,81 +72,32 @@ class GyroSignal:
         return rates
 
 
-def multiply(a, b):
-    w, x, y, z = a
-    v, i, j, k = b
-    return (w*v-x*i-y*j-z*k, w*i+x*v+y*k-z*j,
-            w*j-x*k+y*v+z*i, w*k+x*j-y*i+z*v)
-
-
-class Aim:
-    def __init__(self, full_angle=8.0, deadzone=0.35):
-        self.full_angle = full_angle
+class VelocityAim:
+    """Immediate angular-speed mapping with a small hysteretic noise gate."""
+    def __init__(self, full_speed=90.0, deadzone=2.0):
+        self.full_speed = full_speed
         self.deadzone = deadzone
         self.center()
 
     def center(self):
-        self.q = (1.0, 0.0, 0.0, 0.0)
-        self.gravity_reference = None
+        self.output = (0, 0)
+        self.active = [False, False]
 
-    def update(self, yaw, pitch, roll, dt):
-        # Body axes: X right, Y forward along the remote, Z up.
-        vector = tuple(math.radians(v) * dt for v in (pitch, roll, -yaw))
-        angle = math.sqrt(sum(v*v for v in vector))
-        if angle:
-            f = math.sin(angle / 2) / angle
-            self.q = multiply(self.q, (math.cos(angle / 2), *(v*f for v in vector)))
-            norm = math.sqrt(sum(v*v for v in self.q))
-            self.q = tuple(v/norm for v in self.q)
-
-    def correct_orientation(self, accelerometer, dt):
-        """Dolphin-style sensor fusion and bounded yaw, rather than a rest timer.
-
-        This is an independent adaptation for an Xbox stick, not Dolphin code.
-        """
-        if 0 < dt <= .1 and accelerometer is not None:
-            vector = tuple(float(v)-128 for v in accelerometer)
-            length = math.sqrt(sum(v*v for v in vector))
-            if 8 < length < 80:
-                if self.gravity_reference is None:
-                    self.gravity_reference = (tuple(v/length for v in vector), length)
-                reference, original_length = self.gravity_reference
-                if .8*original_length < length < 1.2*original_length:
-                    body = (0.0, *(v/length for v in vector))
-                    conjugate = (self.q[0], *(-v for v in self.q[1:]))
-                    world = multiply(multiply(self.q, body), conjugate)[1:]
-                    cross = (world[1]*reference[2]-world[2]*reference[1],
-                             world[2]*reference[0]-world[0]*reference[2],
-                             world[0]*reference[1]-world[1]*reference[0])
-                    size = math.sqrt(sum(v*v for v in cross))
-                    if size > 1e-8:
-                        dot = max(-1, min(1, sum(a*b for a,b in zip(world,reference))))
-                        angle = math.atan2(size, dot)*(1-math.pow(.98, dt/.005))
-                        correction = (math.cos(angle/2), *(v/size*math.sin(angle/2) for v in cross))
-                        self.q = multiply(correction, self.q)
-        # Bound accumulated horizontal rotation: moving back from an edge reacts immediately.
-        w,x,y,z = self.q
-        yaw = math.atan2(2*(x*y-w*z), 1-2*(x*x+z*z))
-        limit = math.radians(12.5)
-        target = max(-limit, min(limit, yaw))
-        if abs(yaw-target) > 1e-9:
-            delta = yaw-target
-            self.q = multiply((math.cos(delta/2),0,0,math.sin(delta/2)), self.q)
-        norm = math.sqrt(sum(v*v for v in self.q))
-        self.q = tuple(v/norm for v in self.q)
+    def update(self, yaw, pitch):
+        result = []
+        for i, rate in enumerate((yaw, pitch)):
+            threshold = self.deadzone*.5 if self.active[i] else self.deadzone
+            if abs(rate) <= threshold:
+                self.active[i] = False
+                result.append(0)
+                continue
+            self.active[i] = True
+            amount = min(1.0, (abs(rate)-self.deadzone*.5)/(self.full_speed-self.deadzone*.5))
+            result.append(int(math.copysign(amount*32767, rate)))
+        self.output = tuple(result)
 
     def stick(self):
-        w, x, y, z = self.q
-        # Rotate the forward vector (0,1,0) into the centered frame.
-        fx, fy, fz = 2*(x*y-w*z), 1-2*(x*x+z*z), 2*(y*z+w*x)
-        angles = (math.degrees(math.atan2(fx, fy)),
-                  math.degrees(math.atan2(fz, math.hypot(fx, fy))))
-        def scale(a):
-            if abs(a) <= self.deadzone:
-                return 0
-            value = (abs(a)-self.deadzone)/(self.full_angle-self.deadzone)
-            return int(math.copysign(min(1, value)*32767, a))
-        return tuple(scale(a) for a in angles)
+        return self.output
 
 
 def send(remote, report):
@@ -182,13 +133,13 @@ def initialize(remote):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--full-angle', type=float, default=8, help='Degrees for full stick deflection')
-    parser.add_argument('--deadzone', type=float, default=0.35, help='Aim deadzone in degrees')
+    parser.add_argument('--full-speed', type=float, default=90, help='Degrees/second for full right-stick deflection')
+    parser.add_argument('--speed-deadzone', type=float, default=2, help='Noise gate in degrees/second')
     parser.add_argument('--yaw-sign', type=int, choices=(-1, 1), default=1)
     parser.add_argument('--pitch-sign', type=int, choices=(-1, 1), default=1)
     args = parser.parse_args()
-    if not (0 <= args.deadzone < args.full_angle <= 90):
-        parser.error('Require 0 <= deadzone < full-angle <= 90')
+    if not (0 <= args.speed_deadzone < args.full_speed):
+        parser.error('Require 0 <= speed-deadzone < full-speed')
     import hid
     import vgamepad as vg
     from vgamepad.win.vigem_commons import XUSB_BUTTON as XB
@@ -206,9 +157,9 @@ def main():
         initialize(remote)
         signal = GyroSignal()
         send(remote, [0x12, 0x04, REPORT_MODE])
-        aim = Aim(args.full_angle, args.deadzone)
+        aim = VelocityAim(args.full_speed, args.speed_deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.14 raw gyro, no smoothing). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Ready (v2.15 direct gyro speed, immediate stop). Nunchuk stick -> left stick; MotionPlus -> right stick.')
         print('Press 1 or 2 to center. Gyro calibration remains automatic. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,
@@ -228,8 +179,10 @@ def main():
         while True:
             report = remote.read(64, 100)
             now = time.monotonic()
-            if now - last_gyro > 0.3:
+            if now - last_gyro > 0.05:
                 aim.center()
+                pad.right_joystick(0, 0)
+                pad.update()
             if now - last_packet > 0.3:
                 pad.reset()
                 pad.update()
@@ -268,19 +221,13 @@ def main():
                 rates = signal.update(raw, slow, dt)
                 if rates is not None:
                     last_gyro = now
-                    first_gyro = not seen_gyro
                     seen_gyro = True
-                    if first_gyro or dt > 0.1:
-                        aim.center()
-                    else:
-                        aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
-                                   rates[2], min(dt, .02))
-                        aim.correct_orientation(None, dt)  # Yaw bound only; no accelerometer blending.
+                    aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign)
             elif data is not None:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now
             if center_pressed:
-                # Recenter orientation and gravity reference without touching gyro bias.
+                # Clear right-stick output; no calibration or accumulated angle.
                 aim.center()
             pad.reset()
             for mask, target in mapping.items():
