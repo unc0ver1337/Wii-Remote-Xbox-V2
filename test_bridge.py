@@ -95,10 +95,10 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             b.write_register(remote, 0x04A600FE, 5)
 
-    def test_stream_and_center_chord(self):
+    def test_stream_and_unassigned_1_2(self):
         frames = [(0, [255,255,0,0,1,0]), (0, gyro()), (0, gyro(12000)),
-                  (1, gyro()), (0, gyro()), (0, gyro()),
-                  (2, gyro()), (0, gyro()), (0x0800, gyro()),
+                  (1, gyro(12000)), (0, gyro()), (0, gyro()),
+                  (2, gyro(12000)), (0, gyro()), (0x0800, gyro()),
                   (0x0200, gyro()), (0x0400, gyro()), (0x0100, gyro()),
                   (0x0010, gyro()), (0x1000, gyro()), (0x0080, gyro())]
         # A sustained C hold and missing gyro must not produce aiming or exit.
@@ -138,9 +138,9 @@ class Tests(unittest.TestCase):
         self.assertLess(pad.frames[2]['right'][0], 0)
         for i in (3,6):
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
-        self.assertEqual(pad.frames[3]['right'], (0,0))
+        self.assertEqual(pad.frames[3]['right'], pad.frames[2]['right'])
         self.assertEqual(pad.frames[4]['right'], (0,0))
-        self.assertEqual(pad.frames[6]['right'], (0,0))
+        self.assertEqual(pad.frames[6]['right'], pad.frames[2]['right'])
         for i, button in enumerate(('Y','B','A','X','BACK','START','GUIDE'), start=8):
             self.assertIn(button, pad.frames[i]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))

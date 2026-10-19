@@ -159,8 +159,8 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = VelocityAim(args.full_speed, args.speed_deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.15 direct gyro speed, immediate stop). Nunchuk stick -> left stick; MotionPlus -> right stick.')
-        print('Press 1 or 2 to center. Gyro calibration remains automatic. Ctrl+C to stop.', flush=True)
+        print('Ready (v2.16 direct gyro speed, 1/2 unassigned). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('1/2 unassigned. Gyro calibration remains automatic. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,
                    0x0400: XB.XUSB_GAMEPAD_A,
@@ -175,7 +175,6 @@ def main():
         seen_gyro = False
         report_counts = {}
         last_recovery = last_packet
-        previous_center_buttons = 0
         while True:
             report = remote.read(64, 100)
             now = time.monotonic()
@@ -209,9 +208,6 @@ def main():
                 continue
             last_packet = now
             buttons = ((report[1] << 8) | report[2]) & 0x1F9F
-            center_buttons = buttons & 3
-            center_pressed = bool(center_buttons & ~previous_center_buttons)
-            previous_center_buttons = center_buttons
             if data is not None and data[5] & 2:
                 if not data[4] & 1:
                     nunchuk = (128, 128, False, False)
@@ -226,9 +222,6 @@ def main():
             elif data is not None:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now
-            if center_pressed:
-                # Clear right-stick output; no calibration or accumulated angle.
-                aim.center()
             pad.reset()
             for mask, target in mapping.items():
                 if buttons & mask:
