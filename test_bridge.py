@@ -33,8 +33,10 @@ class Tests(unittest.TestCase):
         for _ in range(10):
             self.assertEqual(signal.update((8057,8227,8124), (True,)*3, .008), (0,0,0))
         self.assertIsNone(signal.update((0,16383,0), (False,)*3, .008))
-        signal.update((10000,8227,8124), (True,)*3, .008)
-        self.assertEqual(signal.filtered, (0,0,0))
+        rates = signal.update((10000,8227,8124), (True,)*3, .008)
+        self.assertAlmostEqual(rates[0], (10000-8057)/13.768)
+        rates = signal.update((8057,8227,8124), (True,)*3, .008)
+        self.assertAlmostEqual(rates[0], 0)
         for _ in range(12):
             rates = signal.update((8500,8227,8124), (True,)*3, .008)
         self.assertGreater(rates[0], 0)

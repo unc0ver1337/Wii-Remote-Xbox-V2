@@ -44,11 +44,10 @@ def decode_nunchuk(data):
 
 
 class GyroSignal:
-    """Robust per-axis baseline and median filtering before angle integration."""
+    """Raw per-packet angular rates; history is used only for automatic bias estimation."""
     def __init__(self):
         self.bias = None
         self.samples = []
-        self.filtered = (0.0, 0.0, 0.0)
         self.slow = None
 
     def update(self, raw, slow, dt):
@@ -56,29 +55,21 @@ class GyroSignal:
             return None
         if self.slow != slow:
             self.samples.clear()
-            self.filtered = (0.0, 0.0, 0.0)
             self.slow = slow
         self.samples.append(tuple(raw))
         self.samples = self.samples[-5:]
-        if len(self.samples) < 5:
-            return (0.0, 0.0, 0.0)
-        med = tuple(statistics.median(c) for c in zip(*self.samples[-3:]))
-        stable = all(max(c)-min(c) <= 30 for c in zip(*self.samples))
+        stable = len(self.samples) == 5 and all(max(c)-min(c) <= 30 for c in zip(*self.samples))
         if self.bias is None:
             if all(slow) and stable:
-                self.bias = med
+                self.bias = tuple(statistics.median(c) for c in zip(*self.samples))
             return (0.0, 0.0, 0.0)
         rates = tuple((v-b)/13.768 * (1 if flag else 2000/440)
-                      for v, b, flag in zip(med, self.bias, slow))
-        # No single malformed sample or mode transition may produce a large jump.
+                      for v, b, flag in zip(raw, self.bias, slow))
         if any(abs(v) > 720 for v in rates):
             return None
         if all(slow) and stable and all(abs(v) < 1.5 for v in rates):
-            self.bias = tuple(b + .02*(v-b) for b, v in zip(self.bias, med))
-        rates = tuple(0.0 if abs(v) < 1.0 else v for v in rates)
-        alpha = 1-math.exp(-max(0, min(dt, .02))/.006)
-        self.filtered = tuple(old+alpha*(new-old) for old, new in zip(self.filtered, rates))
-        return self.filtered
+            self.bias = tuple(b + .02*(v-b) for b, v in zip(self.bias, raw))
+        return rates
 
 
 def multiply(a, b):
@@ -217,7 +208,7 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.13 sensitivity 8 deg + manual center). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Ready (v2.14 raw gyro, no smoothing). Nunchuk stick -> left stick; MotionPlus -> right stick.')
         print('Press 1 or 2 to center. Gyro calibration remains automatic. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,
@@ -284,7 +275,7 @@ def main():
                     else:
                         aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
                                    rates[2], min(dt, .02))
-                        aim.correct_orientation(report[3:6] if len(report) >= 6 else None, dt)
+                        aim.correct_orientation(None, dt)  # Yaw bound only; no accelerometer blending.
             elif data is not None:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now
