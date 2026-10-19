@@ -74,31 +74,6 @@ class Tests(unittest.TestCase):
         aim.correct_orientation(None,.01)
         self.assertLess(aim.stick()[0], at_edge)
 
-    def test_auto_center_combined_with_gravity_correction(self):
-        aim = b.Aim()
-        aim.correct_orientation((128,128,154), .01)
-        aim.update(10,0,0,1)
-        for _ in range(99):
-            aim.correct_orientation((128,128,154), .01)
-            aim.auto_center((15,10,5), .01)
-            aim.auto_center((15,10,5), 0)
-        self.assertNotEqual(aim.stick(), (0,0))
-        aim.auto_center((15,10,5), .01)
-        self.assertEqual(aim.stick(), (0,0))
-        self.assertIsNone(aim.gravity_reference)
-        for _ in range(20):
-            aim.update(15,10,5,.01)
-            aim.correct_orientation((128,128,154), .01)
-            aim.auto_center((15,10,5), .01)
-            self.assertEqual(aim.stick(), (0,0))
-        aim.update(40,0,0,.01)
-        aim.auto_center((40,0,0), .01)
-        self.assertEqual(aim.quiet_time, 0)
-        self.assertNotEqual(aim.stick(), (0,0))
-        aim.auto_center((0,0,0), 1)
-        self.assertEqual(aim.quiet_time, 0)
-        self.assertEqual(aim.full_angle, 8.0)
-
     def test_aim(self):
         for sign in (-1, 1):
             a = b.Aim()
@@ -170,7 +145,8 @@ class Tests(unittest.TestCase):
         self.assertLess(pad.frames[2]['right'][0], 0)
         for i in (3,6):
             self.assertFalse({'START','BACK'} & pad.frames[i]['buttons'])
-        self.assertLess(pad.frames[3]['right'][0],0)
+        self.assertEqual(pad.frames[3]['right'], (0,0))
+        self.assertEqual(pad.frames[6]['right'], (0,0))
         for i, button in enumerate(('Y','B','A','X','BACK','START','GUIDE'), start=8):
             self.assertIn(button, pad.frames[i]['buttons'])
         self.assertEqual(pad.frames[-1]['left'], (0,0))

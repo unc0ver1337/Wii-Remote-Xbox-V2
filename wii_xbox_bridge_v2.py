@@ -97,7 +97,6 @@ class Aim:
     def center(self):
         self.q = (1.0, 0.0, 0.0, 0.0)
         self.gravity_reference = None
-        self.quiet_time = 0.0
 
     def update(self, yaw, pitch, roll, dt):
         # Body axes: X right, Y forward along the remote, Z up.
@@ -108,18 +107,6 @@ class Aim:
             self.q = multiply(self.q, (math.cos(angle / 2), *(v*f for v in vector)))
             norm = math.sqrt(sum(v*v for v in self.q))
             self.q = tuple(v/norm for v in self.q)
-
-    def auto_center(self, rates, dt):
-        if dt <= 0:
-            return
-        if dt > .1 or math.sqrt(sum(v*v for v in rates)) > 25.0:
-            self.quiet_time = 0.0
-            return
-        self.quiet_time += dt
-        if self.quiet_time + 1e-9 >= 1.0:
-            self.q = (1.0, 0.0, 0.0, 0.0)
-            # Re-anchor gravity without changing the gyro's calibrated bias.
-            self.gravity_reference = None
 
     def correct_orientation(self, accelerometer, dt):
         """Dolphin-style sensor fusion and bounded yaw, rather than a rest timer.
@@ -230,8 +217,8 @@ def main():
         send(remote, [0x12, 0x04, REPORT_MODE])
         aim = Aim(args.full_angle, args.deadzone)
         pad = vg.VX360Gamepad()
-        print('Ready (v2.12 sensitivity 8 deg + auto-center). Nunchuk stick -> left stick; MotionPlus -> right stick.')
-        print('1/2 unassigned. Automatic gravity correction and gyro calibration. Ctrl+C to stop.', flush=True)
+        print('Ready (v2.13 sensitivity 8 deg + manual center). Nunchuk stick -> left stick; MotionPlus -> right stick.')
+        print('Press 1 or 2 to center. Gyro calibration remains automatic. Ctrl+C to stop.', flush=True)
         mapping = {0x0800: XB.XUSB_GAMEPAD_Y,
                    0x0200: XB.XUSB_GAMEPAD_B,
                    0x0400: XB.XUSB_GAMEPAD_A,
@@ -246,6 +233,7 @@ def main():
         seen_gyro = False
         report_counts = {}
         last_recovery = last_packet
+        previous_center_buttons = 0
         while True:
             report = remote.read(64, 100)
             now = time.monotonic()
@@ -277,6 +265,9 @@ def main():
                 continue
             last_packet = now
             buttons = ((report[1] << 8) | report[2]) & 0x1F9F
+            center_buttons = buttons & 3
+            center_pressed = bool(center_buttons & ~previous_center_buttons)
+            previous_center_buttons = center_buttons
             if data is not None and data[5] & 2:
                 if not data[4] & 1:
                     nunchuk = (128, 128, False, False)
@@ -294,10 +285,12 @@ def main():
                         aim.update(rates[0]*args.yaw_sign, rates[1]*args.pitch_sign,
                                    rates[2], min(dt, .02))
                         aim.correct_orientation(report[3:6] if len(report) >= 6 else None, dt)
-                        aim.auto_center(rates, dt)
             elif data is not None:
                 nunchuk = decode_nunchuk(data)
                 nunchuk_time = now
+            if center_pressed:
+                # Recenter orientation and gravity reference without touching gyro bias.
+                aim.center()
             pad.reset()
             for mask, target in mapping.items():
                 if buttons & mask:
